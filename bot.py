@@ -53,64 +53,100 @@ SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
 SCAN_INTERVAL = 60
 
 # ============================================================
-# API COINGECKO AVEC RETRY ET PROXY
+# API TRADINGVIEW (PLUS FIABLE SUR RENDER)
 # ============================================================
 
-class CoinGeckoAPI:
+class TradingViewAPI:
     def __init__(self):
-        self.base_url = "https://api.coingecko.com/api/v3"
         self.session = requests.Session()
         self.session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept": "application/json"
+            "Accept": "application/json",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.tradingview.com/",
+            "Origin": "https://www.tradingview.com"
         })
-        # Désactiver la vérification SSL si nécessaire
-        self.session.verify = True
     
     def get_price(self, symbol="BTCUSDT"):
-        """Récupère le prix depuis CoinGecko"""
+        """Récupère le prix depuis TradingView via l'API publique"""
         try:
-            coin_map = {
-                "BTCUSDT": "bitcoin",
-                "ETHUSDT": "ethereum",
-                "SOLUSDT": "solana",
-                "XRPUSDT": "ripple"
+            # TradingView symbol mapping
+            tv_symbols = {
+                "BTCUSDT": "BINANCE:BTCUSDT",
+                "ETHUSDT": "BINANCE:ETHUSDT",
+                "SOLUSDT": "BINANCE:SOLUSDT",
+                "XRPUSDT": "BINANCE:XRPUSDT"
             }
-            coin_id = coin_map.get(symbol, "bitcoin")
             
-            # Utiliser l'API alternative si nécessaire
-            url = f"https://api.coingecko.com/api/v3/simple/price"
+            symbol_tv = tv_symbols.get(symbol, "BINANCE:BTCUSDT")
+            
+            # Utiliser l'API publique de TradingView
+            url = "https://scanner.tradingview.com/crypto/symbols"
             params = {
-                "ids": coin_id,
-                "vs_currencies": "usd",
-                "include_24hr_change": "true"
+                "symbol": symbol_tv.replace(":", "_").lower()
             }
-            r = self.session.get(url, params=params, timeout=10)
-            data = r.json()
             
-            if coin_id in data:
-                price = data[coin_id]["usd"]
-                change_24h = data[coin_id].get("usd_24h_change", 0) / 100
+            response = self.session.get(url, params=params, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if "data" in data and len(data["data"]) > 0:
+                    item = data["data"][0]
+                    price = item.get("v", 0) or item.get("close", 0)
+                    high = item.get("h", price) or item.get("high", price)
+                    low = item.get("l", price) or item.get("low", price)
+                    
+                    if price > 0:
+                        return {
+                            "symbol": symbol,
+                            "price": float(price),
+                            "high_24h": float(high),
+                            "low_24h": float(low)
+                        }
+            
+            # Fallback: utiliser l'API alternative
+            return self.get_price_alternative(symbol)
+            
+        except Exception as e:
+            print(f"❌ TradingView: {e}")
+            return self.get_price_alternative(symbol)
+    
+    def get_price_alternative(self, symbol="BTCUSDT"):
+        """API alternative pour les prix"""
+        try:
+            # Utiliser l'API Binance publique (avec User-Agent)
+            url = "https://api.binance.com/api/v3/ticker/24hr"
+            params = {"symbol": symbol}
+            
+            response = self.session.get(url, params=params, timeout=10)
+            data = response.json()
+            
+            if "lastPrice" in data:
                 return {
                     "symbol": symbol,
-                    "price": float(price),
-                    "high_24h": float(price * (1 + abs(change_24h) + 0.01)),
-                    "low_24h": float(price * (1 - abs(change_24h) - 0.01))
+                    "price": float(data["lastPrice"]),
+                    "high_24h": float(data["highPrice"]),
+                    "low_24h": float(data["lowPrice"])
                 }
             return None
         except Exception as e:
-            print(f"❌ CoinGecko: {e}")
+            print(f"❌ Binance fallback: {e}")
             return None
     
     def get_klines(self, symbol="BTCUSDT", interval="15m", limit=50):
-        """Récupère les bougies depuis Binance (si possible) ou simule"""
-        # Essayer Binance d'abord
+        """Récupère les bougies depuis Binance"""
         try:
             url = "https://api.binance.com/api/v3/klines"
-            params = {"symbol": symbol, "interval": interval, "limit": limit}
-            r = self.session.get(url, params=params, timeout=5)
-            data = r.json()
-            if "code" not in data:
+            params = {
+                "symbol": symbol,
+                "interval": interval,
+                "limit": limit
+            }
+            
+            response = self.session.get(url, params=params, timeout=10)
+            data = response.json()
+            
+            if "code" not in data and len(data) > 0:
                 df = pd.DataFrame(data, columns=[
                     "timestamp", "open", "high", "low", "close", "volume",
                     "close_time", "quote_asset_volume", "number_of_trades",
@@ -119,33 +155,18 @@ class CoinGeckoAPI:
                 df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
                 df[["open", "high", "low", "close", "volume"]] = df[["open", "high", "low", "close", "volume"]].astype(float)
                 return df
-        except:
-            pass
-        
-        # Fallback : données simulées
-        print(f"⚠️ Données simulées pour {symbol}")
-        np.random.seed(hash(symbol) % 100)
-        base_price = 65000 if "BTC" in symbol else 1900 if "ETH" in symbol else 76 if "SOL" in symbol else 1.03
-        timestamps = pd.date_range(end=datetime.now(), periods=limit, freq="15min")
-        prices = [base_price * (1 + np.random.randn() * 0.002) for _ in range(limit)]
-        prices = np.cumsum(prices) / np.arange(1, limit + 1) * 1.5 + base_price / 2
-        df = pd.DataFrame({
-            "timestamp": timestamps,
-            "open": prices,
-            "high": [p * (1 + abs(np.random.randn() * 0.002)) for p in prices],
-            "low": [p * (1 - abs(np.random.randn() * 0.002)) for p in prices],
-            "close": [p * (1 + np.random.randn() * 0.001) for p in prices],
-            "volume": [np.random.randint(100, 1000) for _ in range(limit)]
-        })
-        return df
+            return None
+        except Exception as e:
+            print(f"❌ Klines: {e}")
+            return None
 
 # ============================================================
-# ANALYSE SMC (VERSION SIMPLIFIÉE POUR TEST)
+# ANALYSE SMC
 # ============================================================
 
 class AnalyseSMC:
     def __init__(self):
-        self.api = CoinGeckoAPI()
+        self.api = TradingViewAPI()
     
     def analyser(self, symbol, zone_touchee):
         df = self.api.get_klines(symbol, "15m", limit=50)
@@ -443,14 +464,14 @@ class TradingBot:
         self.token = token
         self.chat_id = chat_id
         self.bot = Bot(token=token)
-        self.api = CoinGeckoAPI()
+        self.api = TradingViewAPI()
         self.analyse = AnalyseSMC()
         self.dernieres_zones = {}
         self.scan_en_cours = False
     
     async def start(self, update, context):
         await update.message.reply_text(
-            "🤖 **Bot SMC Trading**\n\n"
+            "🤖 **Bot SMC Trading (TradingView)**\n\n"
             "📊 **Commandes :**\n"
             "/start - Démarrer\n"
             "/price - Prix en direct\n"
@@ -464,7 +485,7 @@ class TradingBot:
     async def price(self, update, context):
         await update.message.reply_text("📊 Récupération des prix en cours...")
         
-        message = "💰 **Prix en direct :**\n\n"
+        message = "💰 **Prix en direct (TradingView) :**\n\n"
         aucun_prix = 0
         
         for symbol in SYMBOLS:
@@ -479,7 +500,7 @@ class TradingBot:
         message += f"🕐 Mis à jour : {datetime.now().strftime('%H:%M:%S')} UTC"
         
         if aucun_prix == len(SYMBOLS):
-            message += "\n\n⚠️ Aucun prix disponible. Le bot utilise des données simulées pour l'analyse."
+            message += "\n\n⚠️ Aucun prix disponible. Vérifie la connexion réseau."
         
         await update.message.reply_text(message, parse_mode="Markdown")
     
@@ -498,7 +519,8 @@ class TradingBot:
             "• Scan des liquidités (24h High/Low)\n"
             "• Analyse SMC (Sweep, MSS, Displacement, Pullback)\n"
             "• Alerte si SETUP A+ détecté\n\n"
-            "Commandes : /start, /price, /scan, /status, /ping, /help",
+            "Commandes : /start, /price, /scan, /status, /ping, /help\n\n"
+            "📊 **Source :** TradingView",
             parse_mode="Markdown"
         )
     
@@ -565,8 +587,25 @@ class TradingBot:
     async def envoyer_alerte(self, symbol, zone, analyse):
         prix = analyse.get("prix", 0)
         niveau = zone["niveau"]
+        verdict = analyse.get("verdict", {})
         
-        msg = f"""
+        if verdict.get("verdict") == "SETUP_A+":
+            msg = f"""
+🔔 **SETUP A+ DÉTECTÉ !**
+
+📊 **Actif :** {symbol}
+📍 **Zone :** {zone['zone']}
+💰 **Niveau :** ${niveau:.2f}
+🎯 **Prix :** ${prix:.2f}
+
+📈 **Direction :** {verdict['direction']}
+📝 **{verdict['justification']}**
+
+---
+⚠️ Alerte automatique. Fais tes propres vérifications.
+"""
+        else:
+            msg = f"""
 ℹ️ **OBSERVATION EN COURS**
 
 📊 **Actif :** {symbol}
@@ -574,8 +613,12 @@ class TradingBot:
 💰 **Niveau :** ${niveau:.2f}
 🎯 **Prix :** ${prix:.2f}
 
-📝 **Analyse SMC en cours...**
+📝 **{verdict.get('justification', 'En attente de confirmation')}**
+
+---
+⏳ Le bot continue de surveiller.
 """
+        
         try:
             await self.bot.send_message(
                 chat_id=self.chat_id,
@@ -603,7 +646,7 @@ async def main():
     app.add_handler(CommandHandler("price", bot.price))
     
     print("\n" + "="*60)
-    print("🚀 Bot SMC Trading (CoinGecko) démarré")
+    print("🚀 Bot SMC Trading (TradingView) démarré")
     print(f"📊 Symboles : {', '.join(SYMBOLS)}")
     print("="*60 + "\n")
     
