@@ -1,6 +1,11 @@
 services:
-  - type: web
-    name: smc-trading-bot
+  - type: worker         # <-- Changement clé ici (au lieu de "web")
+    name: smc-bot
     env: python
     buildCommand: pip install -r requirements.txt
     startCommand: python bot.py
+    envVars:
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: CHAT_ID
+        sync: false
