@@ -1,3 +1,105 @@
+import os
+import asyncio
+import requests
+import pandas as pd
+import numpy as np
+from datetime import datetime
+from telegram import Bot
+from telegram.ext import Application, CommandHandler
+
+# ============================================================
+# CONFIGURATION - À MODIFIER
+# ============================================================
+
+TELEGRAM_TOKEN = "8832221703:AAE5MwtZa9Y2UEakDWrtAtwaE8XyfPanGHI"
+CHAT_ID = 6199209467
+
+# Symboles à scanner
+SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
+
+# Intervalle de scan en secondes (60 = 1 minute)
+SCAN_INTERVAL = 60
+
+# ============================================================
+# API BYBIT (PUBLIQUE - SANS CLÉ)
+# ============================================================
+
+class BybitAPI:
+    def __init__(self):
+        self.base_url = "https://api.bybit.com/v5"
+    
+    def get_price(self, symbol="BTCUSDT"):
+        """Récupère le prix actuel et les 24h High/Low"""
+        url = f"{self.base_url}/market/tickers"
+        params = {"category": "linear", "symbol": symbol}
+        try:
+            r = requests.get(url, params=params, timeout=10)
+            data = r.json()
+            if data["retCode"] != 0:
+                print(f"❌ Erreur Bybit: {data['retMsg']}")
+                return None
+            t = data["result"]["list"][0]
+            return {
+                "symbol": symbol,
+                "price": float(t["lastPrice"]),
+                "high_24h": float(t["highPrice24h"]),
+                "low_24h": float(t["lowPrice24h"])
+            }
+        except Exception as e:
+            print(f"❌ Erreur get_price: {e}")
+            return None
+    
+    def get_klines(self, symbol="BTCUSDT", interval="15", limit=50):
+        """Récupère les bougies OHLCV"""
+        url = f"{self.base_url}/market/kline"
+        params = {
+            "category": "linear",
+            "symbol": symbol,
+            "interval": interval,
+            "limit": limit
+        }
+        try:
+            r = requests.get(url, params=params, timeout=10)
+            data = r.json()
+            if data["retCode"] != 0:
+                print(f"❌ Erreur klines: {data['retMsg']}")
+                return None
+            candles = data["result"]["list"]
+            df = pd.DataFrame(candles, columns=["timestamp", "open", "high", "low", "close", "volume", "turnover"])
+            df["timestamp"] = pd.to_datetime(df["timestamp"].astype(int), unit="ms")
+            df[["open", "high", "low", "close", "volume"]] = df[["open", "high", "low", "close", "volume"]].astype(float)
+            return df
+        except Exception as e:
+            print(f"❌ Erreur get_klines: {e}")
+            return None
+
+# ============================================================
+# ANALYSE SMC
+# ============================================================
+
+class AnalyseSMC:
+    def __init__(self):
+        self.api = BybitAPI()
+    
+    def analyser(self, symbol, zone_touchee):
+        """Analyse SMC complète après contact liquidité"""
+        
+        # Récupérer les données M15
+        df = self.api.get_klines(symbol, "15", limit=50)
+        if df is None or len(df) < 10:
+            return {
+                "verdict": "OBSERVATION_EN_COURS",
+                "justification": "Données insuffisantes (M15)",
+                "prix": 0
+            }
+        
+        prix = df["close"].iloc[-1]
+        
+        # --- 3.1 SWEEP ---
+        sweep = self.detecter_sweep(df, zone_touchee)
+        
+        # --- 3.2 CASSURE ---
+        cassure = self.detecter_cassure(df, zone_touchee)
         
         # --- 3.3 REJET ---
         rejet = self.detecter_rejet(df, zone_touchee)
