@@ -25,23 +25,19 @@ def verifier_instance_unique():
         try:
             with open(PID_FILE, "r") as f:
                 old_pid = int(f.read().strip())
-            # Vérifier si le processus existe encore
             os.kill(old_pid, 0)
             print(f"⚠️ Une instance est déjà en cours (PID: {old_pid})")
             print("🔍 Arrêt de l'ancienne instance...")
             os.kill(old_pid, signal.SIGTERM)
             time.sleep(2)
         except (OSError, ValueError):
-            # Le processus n'existe plus, on continue
             pass
     
-    # Écrire le PID actuel
     with open(PID_FILE, "w") as f:
         f.write(str(os.getpid()))
     print(f"✅ Instance unique créée (PID: {os.getpid()})")
 
 def nettoyer_pid():
-    """Supprime le fichier PID à l'arrêt"""
     try:
         if os.path.exists(PID_FILE):
             os.remove(PID_FILE)
@@ -55,14 +51,11 @@ def nettoyer_pid():
 TELEGRAM_TOKEN = "8832221703:AAE5MwtZa9Y2UEakDWrtAtwaE8XyfPanGHI"
 CHAT_ID = 6199209467
 
-# Symboles à scanner
 SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
-
-# Intervalle de scan en secondes (60 = 1 minute)
 SCAN_INTERVAL = 60
 
 # ============================================================
-# API BYBIT (PUBLIQUE - SANS CLÉ)
+# API BYBIT
 # ============================================================
 
 class BybitAPI:
@@ -74,7 +67,6 @@ class BybitAPI:
         })
     
     def get_price(self, symbol="BTCUSDT"):
-        """Récupère le prix actuel et les 24h High/Low"""
         url = f"{self.base_url}/market/tickers"
         params = {"category": "linear", "symbol": symbol}
         try:
@@ -95,7 +87,6 @@ class BybitAPI:
             return None
     
     def get_klines(self, symbol="BTCUSDT", interval="15", limit=50):
-        """Récupère les bougies OHLCV"""
         url = f"{self.base_url}/market/kline"
         params = {
             "category": "linear",
@@ -127,9 +118,6 @@ class AnalyseSMC:
         self.api = BybitAPI()
     
     def analyser(self, symbol, zone_touchee):
-        """Analyse SMC complète après contact liquidité"""
-        
-        # Récupérer les données M15
         df = self.api.get_klines(symbol, "15", limit=50)
         if df is None or len(df) < 10:
             return {
@@ -139,44 +127,18 @@ class AnalyseSMC:
             }
         
         prix = df["close"].iloc[-1]
-        
-        # --- 3.1 SWEEP ---
         sweep = self.detecter_sweep(df, zone_touchee)
-        
-        # --- 3.2 CASSURE ---
         cassure = self.detecter_cassure(df, zone_touchee)
-        
-        # --- 3.3 REJET ---
         rejet = self.detecter_rejet(df, zone_touchee)
-        
-        # --- 3.4 CONSOLIDATION ---
         consolidation = self.detecter_consolidation(df)
-        
-        # --- 3.6 ACCEPTATION ---
         acceptation = self.detecter_acceptation(df, zone_touchee)
-        
-        # --- 3.7 REJET PRIX ---
         rejet_prix = self.detecter_rejet_prix(df, zone_touchee)
-        
-        # --- 4 DOMINANCE ---
         dominance = self.determiner_dominance(df)
-        
-        # --- 5 MSS ---
         mss = self.detecter_mss(df)
-        
-        # --- 6 DISPLACEMENT ---
         displacement = self.detecter_displacement(df)
-        
-        # --- 7 PULLBACK ---
         pullback = self.detecter_pullback(df)
-        
-        # --- MACD ---
         macd = self.calculer_macd(df)
-        
-        # --- SAR ---
         sar = self.calculer_sar(df)
-        
-        # --- ÉVALUATION ---
         verdict = self.evaluer_setup(sweep, mss, displacement, pullback)
         
         return {
@@ -199,14 +161,11 @@ class AnalyseSMC:
         }
     
     def detecter_sweep(self, df, zone):
-        """3.1 - Détection du SWEEP"""
         if len(df) < 2:
             return {"type": None, "confirme": False}
-        
         d = df.iloc[-1]
         a = df.iloc[-2]
         niveau = zone["niveau"]
-        
         if zone["zone"] == "24h_high":
             if a["high"] >= niveau and d["close"] < niveau:
                 return {"type": "SELL", "confirme": True}
@@ -460,29 +419,6 @@ class TradingBot:
         self.derniers_prix = {}
         self.scan_en_cours = False
     
-    # === NOUVELLE COMMANDE /price ===
-    async def price(self, update, context):
-        """Commande /price - Prix en direct"""
-        await update.message.reply_text("📊 Récupération des prix en cours...")
-        
-        msg = "📊 **Prix en direct :**\n\n"
-        
-        for symbol in SYMBOLS:
-            data = self.api.get_price(symbol)
-            if data:
-                msg += f"**{symbol}**\n"
-                msg += f"• Prix : ${data['price']:.2f}\n"
-                msg += f"• 24h High : ${data['high_24h']:.2f}\n"
-                msg += f"• 24h Low : ${data['low_24h']:.2f}\n"
-                msg += f"• Variation : {((data['price'] - data['high_24h']) / data['high_24h'] * 100):.2f}%\n\n"
-            else:
-                msg += f"❌ {symbol} : indisponible\n\n"
-        
-        # Ajouter l'heure
-        msg += f"⏰ Mis à jour : {datetime.now().strftime('%H:%M:%S')} UTC"
-        
-        await update.message.reply_text(msg, parse_mode="Markdown")
-    
     async def start(self, update, context):
         await update.message.reply_text(
             "🤖 **Bot SMC Trading**\n\n"
@@ -498,8 +434,25 @@ class TradingBot:
             parse_mode="Markdown"
         )
     
+    async def price(self, update, context):
+        """Commande /price - Prix en direct"""
+        await update.message.reply_text("📊 Récupération des prix en cours...")
+        
+        message = "💰 **Prix en direct :**\n\n"
+        
+        for symbol in SYMBOLS:
+            data = self.api.get_price(symbol)
+            if data:
+                message += f"• **{symbol}** : ${data['price']:.2f}\n"
+                message += f"  (24h H: ${data['high_24h']:.2f} / L: ${data['low_24h']:.2f})\n\n"
+            else:
+                message += f"• **{symbol}** : ❌ Indisponible\n\n"
+        
+        message += f"🕐 Mis à jour : {datetime.now().strftime('%H:%M:%S')} UTC"
+        
+        await update.message.reply_text(message, parse_mode="Markdown")
+    
     async def ping(self, update, context):
-        """Commande /ping - Test de connexion"""
         await update.message.reply_text(
             "🏓 **Pong !**\n\n"
             f"✅ Bot connecté\n"
@@ -542,7 +495,6 @@ class TradingBot:
         )
     
     async def scan(self, update, context):
-        """Commande /scan - Scan manuel"""
         if self.scan_en_cours:
             await update.message.reply_text("⏳ Un scan est déjà en cours...")
             return
@@ -552,7 +504,6 @@ class TradingBot:
         await update.message.reply_text("✅ Scan terminé !")
     
     async def scanner(self):
-        """Scan automatique de tous les symboles"""
         if self.scan_en_cours:
             return
         
@@ -564,7 +515,6 @@ class TradingBot:
         alertes_envoyees = 0
         
         for symbol in SYMBOLS:
-            # Récupérer les données
             data = self.api.get_price(symbol)
             if not data:
                 print(f"❌ {symbol}: Impossible de récupérer les données")
@@ -576,38 +526,30 @@ class TradingBot:
             
             print(f"   📊 {symbol}: prix={prix:.2f}, high={high:.2f}, low={low:.2f}")
             
-            # Initialiser si premier scan
             if symbol not in self.dernieres_zones:
                 self.dernieres_zones[symbol] = None
                 self.derniers_prix[symbol] = prix
             
             zone_touchee = None
             
-            # Détection 24h HIGH
             if prix >= high:
                 if self.dernieres_zones[symbol] != "24h_high":
                     zone_touchee = {"zone": "24h_high", "niveau": high}
                     self.dernieres_zones[symbol] = "24h_high"
                     print(f"🔔 {symbol} - 24h HIGH touchée ! (prix: {prix:.2f})")
-            
-            # Détection 24h LOW
             elif prix <= low:
                 if self.dernieres_zones[symbol] != "24h_low":
                     zone_touchee = {"zone": "24h_low", "niveau": low}
                     self.dernieres_zones[symbol] = "24h_low"
                     print(f"🔔 {symbol} - 24h LOW touchée ! (prix: {prix:.2f})")
             
-            # Si une zone est touchée, on analyse
             if zone_touchee:
                 print(f"📊 Analyse SMC en cours pour {symbol}...")
                 analyse = self.analyse.analyser(symbol, zone_touchee)
                 analyse["prix"] = prix
-                
-                # Envoyer l'alerte
                 await self.envoyer_alerte(symbol, zone_touchee, analyse)
                 alertes_envoyees += 1
             
-            # Mettre à jour le dernier prix
             self.derniers_prix[symbol] = prix
         
         print(f"{'='*60}")
@@ -618,12 +560,10 @@ class TradingBot:
         self.scan_en_cours = False
     
     async def envoyer_alerte(self, symbol, zone, analyse):
-        """Envoie l'alerte sur Telegram"""
         verdict = analyse.get("verdict", {})
         prix = analyse.get("prix", 0)
         niveau = zone["niveau"]
         
-        # Message d'observation (par défaut)
         if verdict.get("verdict") != "SETUP_A+":
             msg = f"""
 ℹ️ **OBSERVATION EN COURS**
@@ -649,7 +589,6 @@ class TradingBot:
 ⏳ Le bot continue de surveiller.
 """
         else:
-            # SETUP A+
             direction = verdict["direction"]
             
             if direction == "BUY":
@@ -706,22 +645,18 @@ class TradingBot:
 # ============================================================
 
 async def main():
-    # Vérifier qu'une seule instance tourne
     verifier_instance_unique()
     
-    # Créer le bot
     bot = TradingBot(TELEGRAM_TOKEN, CHAT_ID)
     
-    # Créer l'application Telegram
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    # Ajouter les commandes
     app.add_handler(CommandHandler("start", bot.start))
     app.add_handler(CommandHandler("help", bot.help))
     app.add_handler(CommandHandler("status", bot.status))
     app.add_handler(CommandHandler("scan", bot.scan))
     app.add_handler(CommandHandler("ping", bot.ping))
-    app.add_handler(CommandHandler("price", bot.price))  # NOUVELLE COMMANDE
+    app.add_handler(CommandHandler("price", bot.price))  # ← NOUVEAU
     
     print("\n" + "="*60)
     print("🚀 Bot SMC Trading démarré !")
@@ -730,12 +665,10 @@ async def main():
     print("🤖 En attente des commandes...")
     print("="*60 + "\n")
     
-    # Démarrer le polling
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
     
-    # Boucle de scan automatique
     while True:
         try:
             await bot.scanner()
