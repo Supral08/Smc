@@ -46,8 +46,11 @@ def nettoyer_pid():
 # CONFIGURATION
 # ============================================================
 
-TELEGRAM_TOKEN = "8832221703:AAE5MwtZa9Y2UEakDWrtAtwaE8XyfPanGHI"
-CHAT_ID = 6199209467
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+CHAT_ID = int(os.environ.get("CHAT_ID", 0))
+
+if not TELEGRAM_TOKEN or not CHAT_ID:
+    raise ValueError("TELEGRAM_TOKEN et CHAT_ID doivent être définis dans les variables d'environnement")
 
 SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
 SCAN_INTERVAL = 60
