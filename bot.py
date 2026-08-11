@@ -432,17 +432,17 @@ class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"✅ Bot SMC Trading is running!")
+        self.wfile.write(b"Bot SMC Trading is running!")  # ← Sans emoji
 
 def demarrer_serveur_factice():
     """Démarre un serveur HTTP sur le port 10000 pour Render"""
     try:
         server = HTTPServer(("0.0.0.0", 10000), HealthHandler)
-        print("✅ Serveur HTTP factice démarré sur le port 10000")
+        print("✅ Serveur HTTP factice demarre sur le port 10000")
         server.serve_forever()
     except Exception as e:
         print(f"⚠️ Serveur factice: {e}")
 
 # Démarrer le serveur factice dans un thread séparé
 thread = threading.Thread(target=demarrer_serveur_factice, daemon=True)
-thread.start()        print("👋 Arrêté")
+thread.start()
