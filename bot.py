@@ -1,4 +1,10 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import os
+import sys
+import signal
+import time
 import asyncio
 import requests
 import pandas as pd
@@ -8,7 +14,42 @@ from telegram import Bot
 from telegram.ext import Application, CommandHandler
 
 # ============================================================
-# CONFIGURATION - À MODIFIER
+# GESTION DES CONFLITS (UNE SEULE INSTANCE)
+# ============================================================
+
+PID_FILE = "bot.pid"
+
+def verifier_instance_unique():
+    """Vérifie qu'une seule instance du bot tourne"""
+    if os.path.exists(PID_FILE):
+        try:
+            with open(PID_FILE, "r") as f:
+                old_pid = int(f.read().strip())
+            # Vérifier si le processus existe encore
+            os.kill(old_pid, 0)
+            print(f"⚠️ Une instance est déjà en cours (PID: {old_pid})")
+            print("🔍 Arrêt de l'ancienne instance...")
+            os.kill(old_pid, signal.SIGTERM)
+            time.sleep(2)
+        except (OSError, ValueError):
+            # Le processus n'existe plus, on continue
+            pass
+    
+    # Écrire le PID actuel
+    with open(PID_FILE, "w") as f:
+        f.write(str(os.getpid()))
+    print(f"✅ Instance unique créée (PID: {os.getpid()})")
+
+def nettoyer_pid():
+    """Supprime le fichier PID à l'arrêt"""
+    try:
+        if os.path.exists(PID_FILE):
+            os.remove(PID_FILE)
+    except:
+        pass
+
+# ============================================================
+# CONFIGURATION
 # ============================================================
 
 TELEGRAM_TOKEN = "8832221703:AAE5MwtZa9Y2UEakDWrtAtwaE8XyfPanGHI"
@@ -27,13 +68,17 @@ SCAN_INTERVAL = 60
 class BybitAPI:
     def __init__(self):
         self.base_url = "https://api.bybit.com/v5"
+        self.session = requests.Session()
+        self.session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        })
     
     def get_price(self, symbol="BTCUSDT"):
         """Récupère le prix actuel et les 24h High/Low"""
         url = f"{self.base_url}/market/tickers"
         params = {"category": "linear", "symbol": symbol}
         try:
-            r = requests.get(url, params=params, timeout=10)
+            r = self.session.get(url, params=params, timeout=10)
             data = r.json()
             if data["retCode"] != 0:
                 print(f"❌ Erreur Bybit: {data['retMsg']}")
@@ -59,7 +104,7 @@ class BybitAPI:
             "limit": limit
         }
         try:
-            r = requests.get(url, params=params, timeout=10)
+            r = self.session.get(url, params=params, timeout=10)
             data = r.json()
             if data["retCode"] != 0:
                 print(f"❌ Erreur klines: {data['retMsg']}")
@@ -163,125 +208,95 @@ class AnalyseSMC:
         niveau = zone["niveau"]
         
         if zone["zone"] == "24h_high":
-            # SELL Sweep : high dépassé puis réintégré en dessous
             if a["high"] >= niveau and d["close"] < niveau:
                 return {"type": "SELL", "confirme": True}
             return {"type": "SELL", "confirme": False}
         elif zone["zone"] == "24h_low":
-            # BUY Sweep : low dépassé puis réintégré au-dessus
             if a["low"] <= niveau and d["close"] > niveau:
                 return {"type": "BUY", "confirme": True}
             return {"type": "BUY", "confirme": False}
         return {"type": None, "confirme": False}
     
     def detecter_cassure(self, df, zone):
-        """3.2 - Détection d'une cassure"""
         if len(df) < 3:
             return {"confirme": False, "direction": None}
-        
         niveau = zone["niveau"]
         closes = df["close"].tail(3).tolist()
-        
         if zone["zone"] == "24h_high":
             if closes[0] > niveau and closes[1] > niveau:
                 return {"confirme": True, "direction": "HAUSSIERE"}
-            return {"confirme": False, "direction": None}
         elif zone["zone"] == "24h_low":
             if closes[0] < niveau and closes[1] < niveau:
                 return {"confirme": True, "direction": "BAISSIERE"}
-            return {"confirme": False, "direction": None}
         return {"confirme": False, "direction": None}
     
     def detecter_rejet(self, df, zone):
-        """3.3 - Détection d'un rejet"""
         if len(df) < 3:
             return {"confirme": False, "type": None}
-        
         niveau = zone["niveau"]
         closes = df["close"].tail(3).tolist()
         highs = df["high"].tail(3).tolist()
         lows = df["low"].tail(3).tolist()
-        
         if zone["zone"] == "24h_high":
             if highs[0] >= niveau and closes[0] < niveau and closes[1] < niveau:
                 return {"confirme": True, "type": "BAISSIER"}
-            return {"confirme": False, "type": None}
         elif zone["zone"] == "24h_low":
             if lows[0] <= niveau and closes[0] > niveau and closes[1] > niveau:
                 return {"confirme": True, "type": "HAUSSIER"}
-            return {"confirme": False, "type": None}
         return {"confirme": False, "type": None}
     
     def detecter_consolidation(self, df):
-        """3.4 - Détection d'une consolidation"""
         if len(df) < 10:
             return {"confirme": False, "range": 0}
-        
         closes = df["close"].tail(10).tolist()
         highs = df["high"].tail(10).tolist()
         lows = df["low"].tail(10).tolist()
-        
         prix_max = max(highs)
         prix_min = min(lows)
         range_prix = prix_max - prix_min
         prix_moyen = sum(closes) / len(closes)
-        
         if range_prix / prix_moyen < 0.005:
             return {"confirme": True, "range": round(range_prix, 2)}
         return {"confirme": False, "range": round(range_prix, 2)}
     
     def detecter_acceptation(self, df, zone):
-        """3.6 - Détection de l'acceptation du prix"""
         if len(df) < 2:
             return {"confirme": False, "type": None}
-        
         niveau = zone["niveau"]
         dernier = df["close"].iloc[-1]
         avant = df["close"].iloc[-2]
-        
         if zone["zone"] == "24h_high":
             if dernier > niveau and avant > niveau:
                 return {"confirme": True, "type": "HAUSSIERE"}
-            return {"confirme": False, "type": None}
         elif zone["zone"] == "24h_low":
             if dernier < niveau and avant < niveau:
                 return {"confirme": True, "type": "BAISSIERE"}
-            return {"confirme": False, "type": None}
         return {"confirme": False, "type": None}
     
     def detecter_rejet_prix(self, df, zone):
-        """3.7 - Détection d'un rejet du prix"""
         if len(df) < 5:
             return {"confirme": False, "type": None}
-        
         niveau = zone["niveau"]
         highs = df["high"].tail(5).tolist()
         lows = df["low"].tail(5).tolist()
         close = df["close"].iloc[-1]
-        
         if zone["zone"] == "24h_high":
             if max(highs) >= niveau and close < niveau:
                 return {"confirme": True, "type": "BAISSIER"}
-            return {"confirme": False, "type": None}
         elif zone["zone"] == "24h_low":
             if min(lows) <= niveau and close > niveau:
                 return {"confirme": True, "type": "HAUSSIER"}
-            return {"confirme": False, "type": None}
         return {"confirme": False, "type": None}
     
     def determiner_dominance(self, df):
-        """4 - Détermination de la dominance"""
         if len(df) < 14:
             return {"dominant": "Neutre", "score": 0}
-        
         closes = df["close"].tolist()
         prix = closes[-1]
-        
         ma7 = sum(closes[-7:]) / 7
         ma14 = sum(closes[-14:]) / 14
         sar = self.calculer_sar(df)
         macd = self.calculer_macd(df)
-        
         score = 0
         if prix > ma7: score += 1
         else: score -= 1
@@ -291,7 +306,6 @@ class AnalyseSMC:
         else: score -= 1
         if macd["croisement"] == "HAUSSIER": score += 1
         else: score -= 1
-        
         if score >= 2:
             return {"dominant": "Acheteurs", "score": score}
         elif score <= -2:
@@ -300,47 +314,29 @@ class AnalyseSMC:
             return {"dominant": "Neutre", "score": 0}
     
     def detecter_mss(self, df):
-        """5 - Détection des MSS (Micro, Intermédiaire, Majeur)"""
         if len(df) < 10:
             return {"mss_requis": False}
-        
         closes = df["close"].tail(10).tolist()
         highs = df["high"].tail(10).tolist()
         lows = df["low"].tail(10).tolist()
         prix = closes[-1]
-        
-        # --- MSS Micro ---
         dh = max(highs[-3:])
         dl = min(lows[-3:])
-        micro = {
-            "confirme": prix > dh or prix < dl,
-            "type": "BUY" if prix > dh else "SELL" if prix < dl else None
-        }
-        
-        # --- MSS Intermédiaire (1H) ---
+        micro = {"confirme": prix > dh or prix < dl, "type": "BUY" if prix > dh else "SELL" if prix < dl else None}
         df_1h = self.api.get_klines("BTCUSDT", "60", limit=10)
         if df_1h is not None and len(df_1h) >= 5:
             ih = max(df_1h["high"].tail(5).tolist())
             il = min(df_1h["low"].tail(5).tolist())
-            inter = {
-                "confirme": prix > ih or prix < il,
-                "type": "BUY" if prix > ih else "SELL" if prix < il else None
-            }
+            inter = {"confirme": prix > ih or prix < il, "type": "BUY" if prix > ih else "SELL" if prix < il else None}
         else:
             inter = {"confirme": False, "type": None}
-        
-        # --- MSS Majeur (24h) ---
         ticker = self.api.get_price("BTCUSDT")
         if ticker:
             mh = ticker["high_24h"]
             ml = ticker["low_24h"]
-            majeur = {
-                "confirme": prix > mh or prix < ml,
-                "type": "BUY" if prix > mh else "SELL" if prix < ml else None
-            }
+            majeur = {"confirme": prix > mh or prix < ml, "type": "BUY" if prix > mh else "SELL" if prix < ml else None}
         else:
             majeur = {"confirme": False, "type": None}
-        
         return {
             "micro": micro,
             "intermediaire": inter,
@@ -349,33 +345,26 @@ class AnalyseSMC:
         }
     
     def detecter_displacement(self, df):
-        """6 - Détection du Displacement"""
         if len(df) < 6:
             return {"confirme": False, "type": None}
-        
         d = df.iloc[-1]
         p = df.iloc[-6:-1]
-        
         taille = abs(d["close"] - d["open"])
         tailles = [abs(p.iloc[i]["close"] - p.iloc[i]["open"]) for i in range(len(p))]
         moy = sum(tailles) / len(tailles) if tailles else 0
-        
         if moy == 0:
             return {"confirme": False, "type": None}
-        
         rang = d["high"] - d["low"]
         if rang > 0:
             pos = (d["close"] - d["low"]) / rang
         else:
             pos = 0.5
-        
         if pos > 0.75:
             type_disp = "BUY"
         elif pos < 0.25:
             type_disp = "SELL"
         else:
             type_disp = None
-        
         return {
             "confirme": taille > moy * 1.2 and type_disp is not None,
             "type": type_disp,
@@ -384,25 +373,16 @@ class AnalyseSMC:
         }
     
     def detecter_pullback(self, df):
-        """7 - Détection du Pullback"""
         if len(df) < 14:
             return {"confirme": False, "type": None}
-        
         closes = df["close"].tolist()
         prix = closes[-1]
-        
         ema7 = pd.Series(closes).ewm(span=7, adjust=False).mean().iloc[-1]
         ema14 = pd.Series(closes).ewm(span=14, adjust=False).mean().iloc[-1]
-        
-        # Voie A : Pullback classique sur EMA7
         if abs(prix - ema7) / ema7 < 0.001:
             return {"confirme": True, "type": "Voie A (classique)"}
-        
-        # Voie B : Pullback assoupli sur EMA14
         if abs(prix - ema14) / ema14 < 0.002 and prix > closes[-2]:
             return {"confirme": True, "type": "Voie B (assoupli)"}
-        
-        # Stabilisation
         if len(closes) >= 5:
             dernieres5 = closes[-5:]
             variation = (max(dernieres5) - min(dernieres5)) / min(dernieres5)
@@ -410,23 +390,18 @@ class AnalyseSMC:
                 macd = self.calculer_macd(df)
                 if macd["histogram"] > 0:
                     return {"confirme": True, "type": "Voie B (stabilisation)"}
-        
         return {"confirme": False, "type": None}
     
     def calculer_macd(self, df):
-        """Calcule le MACD"""
         if len(df) < 26:
             return {"croisement": "INCONNU", "histogram": 0}
-        
         closes = df["close"].tolist()
         s = pd.Series(closes)
-        
         ema12 = s.ewm(span=12, adjust=False).mean()
         ema26 = s.ewm(span=26, adjust=False).mean()
         macd = ema12 - ema26
         signal = macd.ewm(span=9, adjust=False).mean()
         hist = macd - signal
-        
         return {
             "macd": round(macd.iloc[-1], 2),
             "signal": round(signal.iloc[-1], 2),
@@ -435,38 +410,25 @@ class AnalyseSMC:
         }
     
     def calculer_sar(self, df):
-        """Calcule le SAR approximatif"""
         if len(df) < 5:
             return {"prix_vs_sar": "INCONNU"}
-        
         highs = df["high"].tail(5).tolist()
         lows = df["low"].tail(5).tolist()
         close = df["close"].iloc[-1]
-        
         if close > df["close"].iloc[-2]:
             sar = min(lows) * 0.98
-            return {
-                "valeur": round(sar, 2),
-                "type": "HAUSSIER",
-                "prix_vs_sar": "AU_DESSUS" if close > sar else "EN_DESSOUS"
-            }
+            return {"valeur": round(sar, 2), "type": "HAUSSIER", "prix_vs_sar": "AU_DESSUS" if close > sar else "EN_DESSOUS"}
         else:
             sar = max(highs) * 1.02
-            return {
-                "valeur": round(sar, 2),
-                "type": "BAISSIER",
-                "prix_vs_sar": "AU_DESSUS" if close > sar else "EN_DESSOUS"
-            }
+            return {"valeur": round(sar, 2), "type": "BAISSIER", "prix_vs_sar": "AU_DESSUS" if close > sar else "EN_DESSOUS"}
     
     def evaluer_setup(self, sweep, mss, displacement, pullback):
-        """Évalue si toutes les conditions pour un SETUP A+ sont réunies"""
         conditions = {
             "sweep": sweep["confirme"],
             "mss_requis": mss["mss_requis"],
             "displacement": displacement["confirme"],
             "pullback": pullback["confirme"]
         }
-        
         if all(conditions.values()):
             return {
                 "verdict": "SETUP_A+",
@@ -496,6 +458,7 @@ class TradingBot:
         self.analyse = AnalyseSMC()
         self.dernieres_zones = {}
         self.derniers_prix = {}
+        self.scan_en_cours = False
     
     async def start(self, update, context):
         await update.message.reply_text(
@@ -506,17 +469,40 @@ class TradingBot:
             "/start - Démarrer\n"
             "/scan - Scan manuel\n"
             "/status - État du bot\n"
+            "/ping - Test de connexion\n"
             "/help - Aide",
+            parse_mode="Markdown"
+        )
+    
+    async def ping(self, update, context):
+        """Commande /ping - Test de connexion"""
+        await update.message.reply_text(
+            "🏓 **Pong !**\n\n"
+            f"✅ Bot connecté\n"
+            f"⏰ Heure : {datetime.now().strftime('%H:%M:%S')}\n"
+            f"📊 Symboles : {', '.join(SYMBOLS)}",
             parse_mode="Markdown"
         )
     
     async def help(self, update, context):
         await update.message.reply_text(
-            "🤖 **Aide**\n\n"
+            "🤖 **Aide - Bot SMC Trading**\n\n"
+            "🔍 **Fonctionnement :**\n"
             "• Scan permanent des liquidités (24h High/Low)\n"
-            "• Analyse SMC (Sweep, MSS, Displacement, Pullback)\n"
+            "• Passage automatique en M15 si liquidité touchée\n"
+            "• Analyse SMC complète (Sweep, MSS, Displacement, Pullback)\n"
             "• Alerte si SETUP A+ détecté\n\n"
-            "Symboles : BTC, ETH, SOL, XRP",
+            "📊 **Commandes :**\n"
+            "/start - Démarrer le bot\n"
+            "/scan - Lancer un scan manuel\n"
+            "/status - Voir l'état du bot\n"
+            "/ping - Tester la connexion\n"
+            "/help - Afficher cette aide\n\n"
+            "📊 **Symboles surveillés :**\n"
+            "• BTCUSDT\n"
+            "• ETHUSDT\n"
+            "• SOLUSDT\n"
+            "• XRPUSDT",
             parse_mode="Markdown"
         )
     
@@ -525,18 +511,32 @@ class TradingBot:
             f"📊 **État du bot**\n"
             f"• Symboles : {', '.join(SYMBOLS)}\n"
             f"• Intervalle : {SCAN_INTERVAL}s\n"
-            f"• Heure : {datetime.now().strftime('%H:%M:%S')}",
+            f"• Heure : {datetime.now().strftime('%H:%M:%S')}\n"
+            f"• Scan : {'🔄 En cours' if self.scan_en_cours else '✅ En attente'}",
             parse_mode="Markdown"
         )
     
     async def scan(self, update, context):
         """Commande /scan - Scan manuel"""
-        await update.message.reply_text("🔍 Scan manuel en cours...")
+        if self.scan_en_cours:
+            await update.message.reply_text("⏳ Un scan est déjà en cours...")
+            return
+        
+        await update.message.reply_text("🔍 Scan manuel en cours...\n⏳ Analyse des liquidités...")
         await self.scanner()
+        await update.message.reply_text("✅ Scan terminé !")
     
     async def scanner(self):
         """Scan automatique de tous les symboles"""
-        print(f"\n🔍 [{datetime.now().strftime('%H:%M:%S')}] Scan en cours...")
+        if self.scan_en_cours:
+            return
+        
+        self.scan_en_cours = True
+        print(f"\n{'='*60}")
+        print(f"🔍 [{datetime.now().strftime('%H:%M:%S')}] Scan en cours...")
+        print(f"{'='*60}")
+        
+        alertes_envoyees = 0
         
         for symbol in SYMBOLS:
             # Récupérer les données
@@ -549,7 +549,7 @@ class TradingBot:
             high = data["high_24h"]
             low = data["low_24h"]
             
-            print(f"   📊 {symbol}: prix={prix}, high={high}, low={low}")
+            print(f"   📊 {symbol}: prix={prix:.2f}, high={high:.2f}, low={low:.2f}")
             
             # Initialiser si premier scan
             if symbol not in self.dernieres_zones:
@@ -563,28 +563,34 @@ class TradingBot:
                 if self.dernieres_zones[symbol] != "24h_high":
                     zone_touchee = {"zone": "24h_high", "niveau": high}
                     self.dernieres_zones[symbol] = "24h_high"
-                    print(f"🔔 {symbol} - 24h HIGH touchée ! (prix: {prix})")
+                    print(f"🔔 {symbol} - 24h HIGH touchée ! (prix: {prix:.2f})")
             
             # Détection 24h LOW
             elif prix <= low:
                 if self.dernieres_zones[symbol] != "24h_low":
                     zone_touchee = {"zone": "24h_low", "niveau": low}
                     self.dernieres_zones[symbol] = "24h_low"
-                    print(f"🔔 {symbol} - 24h LOW touchée ! (prix: {prix})")
+                    print(f"🔔 {symbol} - 24h LOW touchée ! (prix: {prix:.2f})")
             
             # Si une zone est touchée, on analyse
             if zone_touchee:
                 print(f"📊 Analyse SMC en cours pour {symbol}...")
                 analyse = self.analyse.analyser(symbol, zone_touchee)
-                analyse["prix"] = prix  # S'assurer que le prix est bien passé
+                analyse["prix"] = prix
                 
                 # Envoyer l'alerte
                 await self.envoyer_alerte(symbol, zone_touchee, analyse)
+                alertes_envoyees += 1
             
             # Mettre à jour le dernier prix
             self.derniers_prix[symbol] = prix
         
+        print(f"{'='*60}")
         print(f"✅ Scan terminé à {datetime.now().strftime('%H:%M:%S')}")
+        print(f"📨 Alertes envoyées : {alertes_envoyees}")
+        print(f"{'='*60}\n")
+        
+        self.scan_en_cours = False
     
     async def envoyer_alerte(self, symbol, zone, analyse):
         """Envoie l'alerte sur Telegram"""
@@ -675,6 +681,10 @@ class TradingBot:
 # ============================================================
 
 async def main():
+    # Vérifier qu'une seule instance tourne
+    verifier_instance_unique()
+    
+    # Créer le bot
     bot = TradingBot(TELEGRAM_TOKEN, CHAT_ID)
     
     # Créer l'application Telegram
@@ -685,11 +695,14 @@ async def main():
     app.add_handler(CommandHandler("help", bot.help))
     app.add_handler(CommandHandler("status", bot.status))
     app.add_handler(CommandHandler("scan", bot.scan))
+    app.add_handler(CommandHandler("ping", bot.ping))
     
+    print("\n" + "="*60)
     print("🚀 Bot SMC Trading démarré !")
     print(f"📊 Symboles : {', '.join(SYMBOLS)}")
     print(f"⏳ Intervalle : {SCAN_INTERVAL}s")
     print("🤖 En attente des commandes...")
+    print("="*60 + "\n")
     
     # Démarrer le polling
     await app.initialize()
@@ -705,4 +718,10 @@ async def main():
         await asyncio.sleep(SCAN_INTERVAL)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n🛑 Arrêt demandé par l'utilisateur")
+    finally:
+        nettoyer_pid()
+        print("👋 Bot arrêté")
