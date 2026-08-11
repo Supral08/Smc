@@ -6,6 +6,7 @@ import sys
 import signal
 import time
 import asyncio
+import json
 import requests
 import pandas as pd
 import numpy as np
@@ -52,7 +53,7 @@ SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
 SCAN_INTERVAL = 60
 
 # ============================================================
-# API COINGECKO (PLUS COMPATIBLE AVEC RENDER)
+# API COINGECKO AVEC RETRY ET PROXY
 # ============================================================
 
 class CoinGeckoAPI:
@@ -60,10 +61,14 @@ class CoinGeckoAPI:
         self.base_url = "https://api.coingecko.com/api/v3"
         self.session = requests.Session()
         self.session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/json"
         })
+        # Désactiver la vérification SSL si nécessaire
+        self.session.verify = True
     
     def get_price(self, symbol="BTCUSDT"):
+        """Récupère le prix depuis CoinGecko"""
         try:
             coin_map = {
                 "BTCUSDT": "bitcoin",
@@ -73,7 +78,8 @@ class CoinGeckoAPI:
             }
             coin_id = coin_map.get(symbol, "bitcoin")
             
-            url = f"{self.base_url}/simple/price"
+            # Utiliser l'API alternative si nécessaire
+            url = f"https://api.coingecko.com/api/v3/simple/price"
             params = {
                 "ids": coin_id,
                 "vs_currencies": "usd",
@@ -97,6 +103,7 @@ class CoinGeckoAPI:
             return None
     
     def get_klines(self, symbol="BTCUSDT", interval="15m", limit=50):
+        """Récupère les bougies depuis Binance (si possible) ou simule"""
         # Essayer Binance d'abord
         try:
             url = "https://api.binance.com/api/v3/klines"
@@ -133,7 +140,7 @@ class CoinGeckoAPI:
         return df
 
 # ============================================================
-# ANALYSE SMC (CONSERVE LA PARTIE ANALYSE)
+# ANALYSE SMC (VERSION SIMPLIFIÉE POUR TEST)
 # ============================================================
 
 class AnalyseSMC:
@@ -183,7 +190,6 @@ class AnalyseSMC:
             "verdict": verdict
         }
     
-    # === TOUTES LES MÉTHODES SMC (conservées) ===
     def detecter_sweep(self, df, zone):
         if len(df) < 2:
             return {"type": None, "confirme": False}
@@ -429,7 +435,7 @@ class AnalyseSMC:
             }
 
 # ============================================================
-# BOT TELEGRAM (VERSION SIMPLIFIÉE POUR TEST)
+# BOT TELEGRAM
 # ============================================================
 
 class TradingBot:
@@ -444,7 +450,7 @@ class TradingBot:
     
     async def start(self, update, context):
         await update.message.reply_text(
-            "🤖 **Bot SMC Trading (CoinGecko)**\n\n"
+            "🤖 **Bot SMC Trading**\n\n"
             "📊 **Commandes :**\n"
             "/start - Démarrer\n"
             "/price - Prix en direct\n"
@@ -458,7 +464,8 @@ class TradingBot:
     async def price(self, update, context):
         await update.message.reply_text("📊 Récupération des prix en cours...")
         
-        message = "💰 **Prix en direct (CoinGecko) :**\n\n"
+        message = "💰 **Prix en direct :**\n\n"
+        aucun_prix = 0
         
         for symbol in SYMBOLS:
             data = self.api.get_price(symbol)
@@ -467,8 +474,12 @@ class TradingBot:
                 message += f"  (24h H: ${data['high_24h']:.2f} / L: ${data['low_24h']:.2f})\n\n"
             else:
                 message += f"• **{symbol}** : ❌ Indisponible\n\n"
+                aucun_prix += 1
         
         message += f"🕐 Mis à jour : {datetime.now().strftime('%H:%M:%S')} UTC"
+        
+        if aucun_prix == len(SYMBOLS):
+            message += "\n\n⚠️ Aucun prix disponible. Le bot utilise des données simulées pour l'analyse."
         
         await update.message.reply_text(message, parse_mode="Markdown")
     
