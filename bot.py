@@ -460,6 +460,29 @@ class TradingBot:
         self.derniers_prix = {}
         self.scan_en_cours = False
     
+    # === NOUVELLE COMMANDE /price ===
+    async def price(self, update, context):
+        """Commande /price - Prix en direct"""
+        await update.message.reply_text("📊 Récupération des prix en cours...")
+        
+        msg = "📊 **Prix en direct :**\n\n"
+        
+        for symbol in SYMBOLS:
+            data = self.api.get_price(symbol)
+            if data:
+                msg += f"**{symbol}**\n"
+                msg += f"• Prix : ${data['price']:.2f}\n"
+                msg += f"• 24h High : ${data['high_24h']:.2f}\n"
+                msg += f"• 24h Low : ${data['low_24h']:.2f}\n"
+                msg += f"• Variation : {((data['price'] - data['high_24h']) / data['high_24h'] * 100):.2f}%\n\n"
+            else:
+                msg += f"❌ {symbol} : indisponible\n\n"
+        
+        # Ajouter l'heure
+        msg += f"⏰ Mis à jour : {datetime.now().strftime('%H:%M:%S')} UTC"
+        
+        await update.message.reply_text(msg, parse_mode="Markdown")
+    
     async def start(self, update, context):
         await update.message.reply_text(
             "🤖 **Bot SMC Trading**\n\n"
@@ -467,6 +490,7 @@ class TradingBot:
             "Dès qu'une liquidité est touchée, j'analyse en M15.\n\n"
             "📊 **Commandes :**\n"
             "/start - Démarrer\n"
+            "/price - Prix en direct\n"
             "/scan - Scan manuel\n"
             "/status - État du bot\n"
             "/ping - Test de connexion\n"
@@ -494,6 +518,7 @@ class TradingBot:
             "• Alerte si SETUP A+ détecté\n\n"
             "📊 **Commandes :**\n"
             "/start - Démarrer le bot\n"
+            "/price - Prix en direct\n"
             "/scan - Lancer un scan manuel\n"
             "/status - Voir l'état du bot\n"
             "/ping - Tester la connexion\n"
@@ -696,6 +721,7 @@ async def main():
     app.add_handler(CommandHandler("status", bot.status))
     app.add_handler(CommandHandler("scan", bot.scan))
     app.add_handler(CommandHandler("ping", bot.ping))
+    app.add_handler(CommandHandler("price", bot.price))  # NOUVELLE COMMANDE
     
     print("\n" + "="*60)
     print("🚀 Bot SMC Trading démarré !")
