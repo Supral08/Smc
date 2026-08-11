@@ -420,29 +420,36 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\n🛑 Arrêt")
     finally:
-        nettoyer_pid()
-# ============================================================
-# SERVEUR HTTP FACTICE POUR RENDER (GRATUIT)
+    # ============================================================
+# SERVEUR HTTP FACTICE POUR RENDER (ULTIME)
 # ============================================================
 
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
+import socket
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot SMC Trading is running!")  # ← Sans emoji
+        self.wfile.write(b"Bot SMC Trading is running!")
 
 def demarrer_serveur_factice():
-    """Démarre un serveur HTTP sur le port 10000 pour Render"""
+    """Démarre un serveur HTTP sur le port 10000 avec gestion d'erreurs"""
     try:
+        # Vérifier que le port est disponible
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("0.0.0.0", 10000))
+            print("✅ Port 10000 disponible")
+        
         server = HTTPServer(("0.0.0.0", 10000), HealthHandler)
         print("✅ Serveur HTTP factice demarre sur le port 10000")
         server.serve_forever()
     except Exception as e:
-        print(f"⚠️ Serveur factice: {e}")
+        print(f"⚠️ Erreur serveur factice: {e}")
 
-# Démarrer le serveur factice dans un thread séparé
+# Démarrer le serveur factice IMMÉDIATEMENT dans un thread séparé
 thread = threading.Thread(target=demarrer_serveur_factice, daemon=True)
 thread.start()
+print("🚀 Thread du serveur factice lance")    nettoyer_pid()
+# 
